@@ -1132,6 +1132,7 @@
     this.smooth_skeletons_sigma = 200; // nm
     this.resample_skeletons = false;
     this.resampling_delta = 3000; // nm
+    this.triangulated_lines = true;
     this.skeleton_line_width = 3;
     this.skeleton_node_scaling = 1.0;
     this.invert_shading = false;
@@ -4935,6 +4936,8 @@
     this.axon = null;
     // Optional history information
     this.history = null;
+    // A later set flag if lines are renderd as meshes
+    this.triangulated_lines = false;
   };
 
   WebGLApplication.prototype.Space.prototype.Skeleton.prototype = {};
@@ -4959,22 +4962,42 @@
       console.log('Can not initialize skeleton object');
       return;
     }
+    this.triangulated_lines = options.triangulated_lines;
+
     this.actorColor = this.skeletonmodel.color.clone();
     var CTYPES = this.CTYPES;
-    this.line_material = new THREE.LineBasicMaterial({color: 0xffff00, opacity: 1.0, linewidth: options.skeleton_line_width});
+
+    if (options.triangulated_lines) {
+      this.line_material = new THREE.LineMaterial({
+        color: 0xffff00,
+        linewidth: options.skeleton_line_width
+      });
+    } else {
+      this.line_material = new THREE.LineBasicMaterial({
+        color: 0xffff00,
+        opacity: 1.0,
+        linewidth: options.skeleton_line_width
+      });
+    }
 
     // Optional override material for a particular skeleton
     this.overrideMaterial = null;
 
+    var GeometryType = options.triangulated_lines ?
+          THREE.LineSegmentsGeometry : THREE.Geometry;
+
     // Connector links
     this.geometry = {};
-    this.geometry[CTYPES[0]] = new THREE.Geometry();
+    this.geometry[CTYPES[0]] = new GeometryType();
     this.geometry[CTYPES[1]] = new THREE.Geometry();
     this.geometry[CTYPES[2]] = new THREE.Geometry();
     this.geometry[CTYPES[3]] = new THREE.Geometry();
 
+    var MeshType = options.triangulated_lines ?
+          THREE.LineSegments2 : THREE.LineSegments;
+
     this.actor = {}; // has three keys (the CTYPES), each key contains the edges of each type
-    this.actor[CTYPES[0]] = new THREE.LineSegments(this.geometry[CTYPES[0]], this.line_material);
+    this.actor[CTYPES[0]] = new MeshType(this.geometry[CTYPES[0]], this.line_material);
     this.actor[CTYPES[1]] = new THREE.LineSegments(this.geometry[CTYPES[1]], this.space.staticContent.connectorLineColors[CTYPES[1]]);
     this.actor[CTYPES[2]] = new THREE.LineSegments(this.geometry[CTYPES[2]], this.space.staticContent.connectorLineColors[CTYPES[2]]);
     this.actor[CTYPES[3]] = new THREE.LineSegments(this.geometry[CTYPES[3]], this.space.staticContent.connectorLineColors[CTYPES[3]]);
@@ -4995,6 +5018,15 @@
     this.connectoractor = null;
     this.connectorgeometry = {};
     this.connectorSelection = null;
+  };
+
+  WebGLApplication.prototype.Space.prototype.Skeleton.prototype.getGeometryVertices = function(type) {
+    var geometry = this.geometry['neurite'];
+    if (this.triangulated_lines) {
+      return geometry.getAttribute('position');
+    } else {
+      return geometry.vertices;
+    }
   };
 
   WebGLApplication.prototype.Space.prototype.Skeleton.prototype.destroy = function(collection) {
@@ -5140,7 +5172,7 @@
     }
 
     // Find Vector3 of tagged nodes
-    var vs = this.geometry['neurite'].vertices.reduce(function(o, v) {
+    var vs = this.getGeometryVertices('neurite').reduce(function(o, v) {
       if (v.node_id in nodeIDTags) o[v.node_id] = v;
       return o;
     }, {});
@@ -5884,8 +5916,12 @@
       // Only add geometry to the scene that has at least one vertex. Not every
       // CTYPE actor is actually used, so this case can happen. Adding empty
       // geometry causes renderer warnings, which we want to avoid.
-      if (actor && actor.geometry.vertices.length > 0) {
-        this.space.add(this.actor[t]);
+      if (actor) {
+        var nNodes = actor instanceof THREE.LineSegments2 ?
+            actor.geometry.index.count : actor.geometry.vertices.length;
+        if (nNodes > 0) {
+          this.space.add(this.actor[t]);
+        }
       }
     }, this);
   };
@@ -6088,12 +6124,11 @@
     }
   };
 
-  WebGLApplication.prototype.Space.prototype.Skeleton.prototype.createEdge = function(v1, v2, type) {
+  WebGLApplication.prototype.Space.prototype.Skeleton.prototype.createEdge = function(v1, v2, target) {
     // Create edge between child (id1) and parent (id2) nodes:
     // Takes the coordinates of each node, transforms them into the space,
     // and then adds them to the parallel lists of vertices and vertexIDs
-    var vs = this.geometry[type].vertices;
-    vs.push(v1, v2);
+    target.vertices.push(v1, v2);
   };
 
   WebGLApplication.prototype.Space.prototype.Skeleton.prototype.createNodeSphere =
@@ -6350,6 +6385,9 @@
     var partner_nodes = [];
     var labels = new Map();
 
+    var edgeGeometry = this.triangulated_lines ?
+          new THREE.Geometry() : this.geometry['neurite'];
+
     // Create edges between all skeleton nodes
     // and a sphere on the node if radius > 0
     nodes.forEach(function(node) {
@@ -6391,10 +6429,10 @@
           // that the geometry can be reused
           this.createCylinder(v1, v2, node[6], material, preventSceneUpdate);
           // Create skeleton line as well
-          this.createEdge(v1, v2, 'neurite');
+          this.createEdge(v1, v2, edgeGeometry);
         } else {
           // Create line
-          this.createEdge(v1, v2, 'neurite');
+          this.createEdge(v1, v2, edgeGeometry);
           // Create sphere
           if (node[6] > 0) {
             this.createNodeSphere(v1, node[6], material, preventSceneUpdate);
@@ -6431,6 +6469,19 @@
       }
     }, this);
 
+    // Mesh based lines need to be added as a whole
+    if (this.triangulated_lines) {
+      this.geometry['neurite'].setPositions(
+          edgeGeometry.vertices.reduce(function(l, v, i) {
+            l[i * 3] = v.x;
+            l[i * 3 + 1] = v.y;
+            l[i * 3 + 2] = v.z;
+            return l;
+          }, new Array(edgeGeometry.vertices.length)));
+      this.actor['neurite'].computeLineDistances();
+      this.actor['neurite'].scale.set(1, 1, 1);
+    }
+
     if (options.smooth_skeletons) {
       var arbor = this.createArbor();
       if (arbor.root) {
@@ -6461,7 +6512,7 @@
       v1.node_id = con[1];
       var v2 = vs[con[0]];
       if (v1 && v2) {
-        this.createEdge(v1, v2, this.synapticTypes[type]);
+        this.createEdge(v1, v2, this.geometry[this.synapticTypes[type]]);
         var defaultMaterial = this.space.staticContent.synapticColors[type] ||
           this.space.staticContent.synapticColors.default;
         partner_nodes.push([v2, defaultMaterial, type]);
