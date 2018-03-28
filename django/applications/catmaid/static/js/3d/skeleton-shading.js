@@ -1001,6 +1001,12 @@
       material: function(skeleton) {
         if (isFn(shading.material)) {
           return shading.material(skeleton, options);
+        } else if (options.triangulated_lines) {
+          return new THREE.LineMaterial({
+            color: skeleton.line_material.color,
+            opacity: skeleton.line_material.opacity,
+            linewidth: options.skeleton_line_width
+          });
         } else {
           return new THREE.LineBasicMaterial({
             color: skeleton.line_material.color,
